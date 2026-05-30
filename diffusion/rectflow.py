@@ -48,9 +48,12 @@ class RectifiedFlow:
             (x_t, x0, vel): interpolated point, noise used, and regression
                             target velocity (x1 - x0), all shape (B, *).
         """
-        # TODO (6.A) — sample x0 ~ N(0,I), form x_t, compute vel
-        # Hint: broadcast t to match x1's spatial dimensions before multiplying.
-        raise NotImplementedError
+        x0 = torch.randn_like(x1)
+        # Broadcast t: (B,) -> (B, 1, 1, 1) for image tensors
+        t4 = t.view(t.shape[0], *([1] * (x1.dim() - 1)))
+        x_t = (1.0 - t4) * x0 + t4 * x1
+        vel = x1 - x0
+        return x_t, x0, vel
 
     def loss(self, v_theta: nn.Module, x1: Tensor) -> Tensor:
         """Rectified Flow training loss (RF objective).
@@ -65,8 +68,10 @@ class RectifiedFlow:
         Returns:
             Scalar loss.
         """
-        # TODO (6.A)
-        raise NotImplementedError
+        B = x1.shape[0]
+        t = torch.rand(B, device=x1.device)
+        x_t, _, vel = self.forward_process(x1, t)
+        return F.mse_loss(v_theta(x_t, t), vel)
 
     # ------------------------------------------------------------------
     # 6.B  Euler ODE sampler
@@ -96,8 +101,17 @@ class RectifiedFlow:
         Returns:
             Generated samples X_1, shape (B, C, H, W).
         """
-        # TODO (6.B)
-        raise NotImplementedError
+        B = shape[0]
+        dt = 1.0 / num_steps
+        x = torch.randn(shape, device=device)
+
+        ts = torch.linspace(0.0, 1.0 - dt, num_steps, device=device)
+        for t_val in ts:
+            t = torch.full((B,), t_val.item(), device=device)
+            v = v_theta(x, t)
+            x = x + v * dt
+
+        return x
 
     # ------------------------------------------------------------------
     # 6.C  Reflow  (data generation only — retraining uses loss() above)
@@ -130,5 +144,28 @@ class RectifiedFlow:
         Returns:
             (x0_all, x1_all): tensors of shape (n_pairs, C, H, W) on CPU.
         """
-        # TODO (6.C)
-        raise NotImplementedError
+        dt = 1.0 / num_steps
+        ts = torch.linspace(0.0, 1.0 - dt, num_steps, device=device)
+
+        x0_list, x1_list = [], []
+        generated = 0
+
+        while generated < n_pairs:
+            bs = min(batch_size, n_pairs - generated)
+            # Fresh noise
+            x = torch.randn(bs, *image_shape, device=device)
+            x0_batch = x.clone()
+
+            # Euler ODE integration
+            for t_val in ts:
+                t = torch.full((bs,), t_val.item(), device=device)
+                v = v_theta(x, t)
+                x = x + v * dt
+
+            x0_list.append(x0_batch.cpu())
+            x1_list.append(x.cpu())
+            generated += bs
+
+        x0_all = torch.cat(x0_list, dim=0)[:n_pairs]
+        x1_all = torch.cat(x1_list, dim=0)[:n_pairs]
+        return x0_all, x1_all
